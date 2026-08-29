@@ -85,8 +85,10 @@ def main() -> int:
     w.writeheader()
     w.writerows(filas)
     crudo = buf.getvalue().encode("utf-8")
-    with gzip.open(salida, "wb", compresslevel=9, mtime=0) as fh:
-        fh.write(crudo)
+    with open(salida, "wb") as raw:
+        with gzip.GzipFile(filename="", mode="wb", fileobj=raw,
+                           compresslevel=9, mtime=0) as fh:
+            fh.write(crudo)
     print(f"Comprimido: {len(crudo)/1e6:.2f} MB -> {os.path.getsize(salida)/1e6:.2f} MB")
 
     # catalogo: se reescribe solo si cambio
