@@ -3,7 +3,12 @@ name: Descarga diaria de precios
 "on":
   workflow_dispatch:
   schedule:
-    - cron: "0 13 * * *"
+    # Tres intentos al dia. El script es idempotente: el primero que
+    # tenga exito escribe el archivo, los demas no hacen nada.
+    # Minuto 23 a proposito: GitHub encola las tareas del minuto 0.
+    - cron: "23 13 * * *"   # 07:23 CDMX
+    - cron: "23 16 * * *"   # 10:23 CDMX
+    - cron: "23 19 * * *"   # 13:23 CDMX
 
 permissions:
   contents: write
