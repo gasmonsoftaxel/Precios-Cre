@@ -7,6 +7,8 @@ Idempotente: si el archivo del dia ya existe, no lo reescribe.
 import csv, datetime, gzip, io, os, sys, urllib.request
 import xml.etree.ElementTree as ET
 
+import geo
+
 PLACES = "https://publicacionexterna.azurewebsites.net/publicaciones/places"
 PRICES = "https://publicacionexterna.azurewebsites.net/publicaciones/prices"
 PRECIO_MIN, PRECIO_MAX = 10.0, 45.0
@@ -105,6 +107,13 @@ def main() -> int:
             w.writeheader()
             w.writerows(nuevo)
         print(f"Catalogo actualizado: {len(nuevo)} estaciones")
+
+    # geografia: se recalcula siempre, para que las estaciones nuevas de la
+    # CNE nunca aparezcan sin estado ni municipio
+    try:
+        geo.construir(nuevo)
+    except Exception as e:              # nunca tumbar la descarga por esto
+        print(f"AVISO: no se pudo regenerar la geografia: {e}", file=sys.stderr)
 
     print(f"OK: {len(filas)} filas -> {salida} "
           f"(descartados: {fuera} fuera de rango, {sin_permiso} sin permiso)")
