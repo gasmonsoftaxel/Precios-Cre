@@ -26,10 +26,14 @@ jobs:
       - name: Descargar precios
         run: python descarga.py
 
+      - name: Corregir diesel con la API de la CNE
+        run: python api_cne.py
+        continue-on-error: true
+
       - name: Guardar en el repositorio
         run: |
           git config user.name "bot-precios"
           git config user.email "bot-precios@users.noreply.github.com"
-          git add historico catalogo.csv estaciones_geo.csv.gz
+          git add historico detalle catalogo.csv estaciones_geo.csv.gz
           git diff --staged --quiet || git commit -m "Precios $(date -u +%F)"
           git push
