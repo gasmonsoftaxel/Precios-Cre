@@ -1,0 +1,40 @@
+name: Actualizacion semanal del KML
+
+"on":
+  workflow_dispatch:
+  schedule:
+    # Lunes 15:40 UTC = 09:40 CDMX. Profeco publica el promedio de la
+    # semana anterior, asi que el lunes ya esta el corte nuevo.
+    - cron: "40 15 * * 1"
+
+permissions:
+  contents: write
+
+jobs:
+  kml:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Descargar y procesar el KML de Profeco
+        run: python kml.py
+
+      - name: Regenerar la geografia con los atributos nuevos
+        run: |
+          python - <<'PY'
+          import csv, geo
+          with open("catalogo.csv", encoding="utf-8") as fh:
+              geo.construir(list(csv.DictReader(fh)))
+          PY
+
+      - name: Guardar en el repositorio
+        run: |
+          git config user.name "bot-precios"
+          git config user.email "bot-precios@users.noreply.github.com"
+          git add atributos_profeco.csv.gz precio_compra.csv.gz estaciones_geo.csv.gz
+          git diff --staged --quiet || git commit -m "KML semanal $(date -u +%F)"
+          git push

@@ -30,6 +30,6 @@ jobs:
         run: |
           git config user.name "bot-precios"
           git config user.email "bot-precios@users.noreply.github.com"
-          git add historico catalogo.csv
+          git add historico catalogo.csv estaciones_geo.csv.gz
           git diff --staged --quiet || git commit -m "Precios $(date -u +%F)"
           git push
