@@ -21,15 +21,32 @@ def bajar(url: str) -> bytes:
         return r.read()
 
 
+def _escribir_precios(salida, filas, fuera, sin_permiso):
+    buf = io.StringIO()
+    w = csv.DictWriter(buf, fieldnames=["fecha", "cre_id", "combustible", "precio"],
+                       lineterminator="\n")
+    w.writeheader()
+    w.writerows(filas)
+    crudo = buf.getvalue().encode("utf-8")
+    with open(salida, "wb") as raw:
+        with gzip.GzipFile(filename="", mode="wb", fileobj=raw,
+                           compresslevel=9, mtime=0) as fh:
+            fh.write(crudo)
+    print(f"Comprimido: {len(crudo)/1e6:.2f} MB -> {os.path.getsize(salida)/1e6:.2f} MB")
+    print(f"OK: {len(filas)} filas -> {salida} "
+          f"(descartados: {fuera} fuera de rango, {sin_permiso} sin permiso)")
+
+
 def main() -> int:
     cdmx = datetime.timezone(datetime.timedelta(hours=-6))
     fecha = datetime.datetime.now(cdmx).strftime("%Y-%m-%d")
 
     os.makedirs(DEST, exist_ok=True)
     salida = os.path.join(DEST, f"precios_{fecha}.csv.gz")
-    if os.path.exists(salida):
-        print(f"OMITIDO: ya existe {salida}")
-        return 0
+    ya_estaba = os.path.exists(salida)
+    if ya_estaba:
+        print(f"El precio de hoy ya existe ({os.path.basename(salida)}); "
+              f"no se reescribe, pero el catalogo y la geografia si se actualizan.")
 
     print("Descargando catalogo...")
     places = ET.fromstring(bajar(PLACES))
@@ -81,17 +98,10 @@ def main() -> int:
         return 1
 
     filas.sort(key=lambda r: (r["cre_id"], r["combustible"]))
-    buf = io.StringIO()
-    w = csv.DictWriter(buf, fieldnames=["fecha", "cre_id", "combustible", "precio"],
-                       lineterminator="\n")
-    w.writeheader()
-    w.writerows(filas)
-    crudo = buf.getvalue().encode("utf-8")
-    with open(salida, "wb") as raw:
-        with gzip.GzipFile(filename="", mode="wb", fileobj=raw,
-                           compresslevel=9, mtime=0) as fh:
-            fh.write(crudo)
-    print(f"Comprimido: {len(crudo)/1e6:.2f} MB -> {os.path.getsize(salida)/1e6:.2f} MB")
+    if ya_estaba:
+        print(f"Precios del dia: se conservan los {len(filas)} de la primera corrida.")
+    else:
+        _escribir_precios(salida, filas, fuera, sin_permiso)
 
     # catalogo: se reescribe solo si cambio
     cpath = os.path.join(os.path.dirname(DEST), "catalogo.csv")
@@ -115,8 +125,6 @@ def main() -> int:
     except Exception as e:              # nunca tumbar la descarga por esto
         print(f"AVISO: no se pudo regenerar la geografia: {e}", file=sys.stderr)
 
-    print(f"OK: {len(filas)} filas -> {salida} "
-          f"(descartados: {fuera} fuera de rango, {sin_permiso} sin permiso)")
     return 0
 
 
