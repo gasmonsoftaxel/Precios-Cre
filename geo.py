@@ -21,7 +21,7 @@ ATRIBUTOS   = os.path.join(BASE, "atributos_profeco.csv.gz")
 TARS        = os.path.join(BASE, "tars.csv")
 SALIDA      = os.path.join(BASE, "estaciones_geo.csv.gz")
 
-COLS = ["cre_id","razon_social","cve_geo","cve_ent","cve_mun","estado","municipio",
+COLS = ["cre_id","tipo_permiso","razon_social","cve_geo","cve_ent","cve_mun","estado","municipio",
         "latitud","longitud","km_localidad","geo_origen","en_mapa_profeco",
         "tar_cercana","tar_region","km_tar",
         "marca","grupo","clasificacion","tipo_flete","fronterizo","tar_etiqueta",
@@ -100,6 +100,26 @@ def tar_mas_cercana(la, lo, tars):
     return mejor, dmin
 
 
+def tipo_permiso(cre_id):
+    """Separa las gasolineras publicas de las instalaciones privadas.
+
+    ESA = Estacion de Servicio para Autoconsumo: flotas de empresas
+          (Coppel, Barcel, mineras, lineas de autotransporte). No venden
+          al publico y no compiten en el mercado.
+    TRA = permisos de transporte.
+    ES  = estacion de servicio al publico, que es la que interesa para
+          cualquier analisis de precios de mercado.
+    """
+    c = (cre_id or "").upper()
+    if "/ESA/" in c:
+        return "Autoconsumo"
+    if "/TRA/" in c:
+        return "Transporte"
+    if "/ES/" in c:
+        return "Publico"
+    return "Otro"
+
+
 def coordenada_valida(la, lo):
     return la is not None and lo is not None and 14 < la < 33 and -119 < lo < -86
 
@@ -123,6 +143,7 @@ def construir(catalogo):
 
         fila = {c: "" for c in COLS}
         fila["cre_id"] = x["cre_id"]
+        fila["tipo_permiso"] = tipo_permiso(x["cre_id"])
         fila["razon_social"] = (a or {}).get("razon_social") or (x.get("nombre") or "").title()
         fila["en_mapa_profeco"] = "si" if a else "no"
         for c in ("marca", "grupo", "clasificacion", "tipo_flete", "fronterizo",
@@ -163,6 +184,9 @@ def construir(catalogo):
             w.writerows(filas)
             gz.write(buf.getvalue().encode("utf-8"))
 
+    tipos = collections.Counter(f["tipo_permiso"] for f in filas)
     print("geo: %d estaciones · %d sin coordenadas · %d nuevas sin atributos de Profeco"
           % (len(filas), sin_coord, nuevas))
+    print("     por tipo de permiso: %s"
+          % " · ".join("%s %d" % (k, v) for k, v in tipos.most_common()))
     return len(filas)
