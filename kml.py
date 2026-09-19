@@ -1,53 +1,56 @@
 #!/usr/bin/env python3
 """
-Descarga el KML de Profeco y regenera los dos archivos que solo el KML puede dar:
+Descarga el KML de Profeco y actualiza los dos archivos que solo el KML puede dar:
 
-  atributos_profeco.csv.gz  -> razon social, marca, grupo, clasificacion,
-                               tipo de flete, fronterizo, etiqueta TAR
+  atributos_profeco.csv.gz  -> razon social, domicilio, marca, grupo,
+                               clasificacion, tipo de flete, fronterizo, TAR
   precio_compra.csv.gz      -> precio de compra en TAR y margen, por estacion
                                y combustible, mas el precio del mapa
 
 Corre una vez por semana. La geografia NO sale de aqui: eso lo hace geo.py con
 el catalogo del INEGI, que es mas confiable y cubre las 15,000+ estaciones.
 
-IMPORTANTE - guardas de seguridad
----------------------------------
-El 14 de septiembre de 2026 este script sobrescribio los dos archivos con
-archivos vacios: el KML se descargo completo (paso la revision de 5 MB) pero
-el parser no encontro ni un solo Placemark utilizable, y aun asi escribio.
-Una semana antes ya habia perdido las 2,010 filas de Premium sin avisar.
+FUSIONA, NO REEMPLAZA
+---------------------
+Profeco dejo de publicar Premium en el mapa en septiembre de 2026. Si cada
+corrida reescribiera los archivos desde cero, esas 2,010 filas se perderian.
+Por eso ahora se fusiona: lo que trae el KML nuevo pisa a lo viejo, y lo que
+ya no trae se conserva tal cual, con la vigencia con la que se capturo. La
+columna vigencia dice de que semana es cada fila.
 
-Ahora, antes de escribir, se compara contra lo que ya existe y se ABORTA si:
-  - no se extrajo nada,
-  - se perdio mas del 15% de las filas,
-  - o desaparecio por completo un combustible que antes existia.
-
-Cuando aborta, deja _kml_diagnostico.txt con las etiquetas y los nombres de
-campo que si encontro, para saber que cambio del lado de Profeco.
+GUARDAS
+-------
+El 14 de septiembre de 2026 una version anterior de este script sobrescribio
+los dos archivos con archivos vacios: el KML bajo completo (paso la revision
+de 5 MB) pero el parser no encontro un solo Placemark utilizable, y aun asi
+escribio. Ahora se aborta antes de tocar nada si:
+  - no se extrajo ni una estacion, o
+  - se extrajo menos de la mitad de lo que ya habia.
+Al abortar deja _kml_diagnostico.txt con las etiquetas y los nombres de campo
+que si encontro.
 
 Uso:
-    python kml.py               # descarga y regenera (con guardas)
+    python kml.py               # descarga y fusiona
     python kml.py archivo.kml   # usa un KML local (para pruebas)
-    python kml.py --force       # escribe aunque las guardas fallen
+    python kml.py --reemplazar  # NO fusiona: escribe solo lo que trae el KML
 """
-import csv, collections, gzip, io, os, re, sys, unicodedata, urllib.request
+import csv, collections, datetime, gzip, io, os, re, sys, unicodedata, urllib.request
 import xml.etree.ElementTree as ET
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 MID  = "1yvHhc5KYiEEMMVKxzOMIUUKEuq1H7_c"
 URL  = "https://www.google.com/maps/d/kml?mid=%s&forcekml=1" % MID
-NS   = {"k": "http://www.opengis.net/kml/2.2"}
 
 ATRIBUTOS   = os.path.join(BASE, "atributos_profeco.csv.gz")
 COMPRA      = os.path.join(BASE, "precio_compra.csv.gz")
 DIAGNOSTICO = os.path.join(BASE, "_kml_diagnostico.txt")
 
-# Tolerancia: cuanto puede encoger un archivo antes de que se considere un fallo.
-CAIDA_MAXIMA = 0.15
+# Si el KML trae menos de esta fraccion de lo que ya existe, algo se rompio.
+PISO_MINIMO = 0.50
 
 COLS_ATRIBUTOS = ["cre_id", "razon_social", "marca", "grupo", "clasificacion",
                   "tipo_flete", "fronterizo", "tar_etiqueta",
-                  "estado_profeco", "municipio_profeco", "vigencia"]
+                  "estado_profeco", "municipio_profeco", "domicilio", "vigencia"]
 COLS_COMPRA    = ["llave", "cre_id", "combustible", "precio_compra_tar",
                   "margen_profeco", "precio_mapa", "vigencia"]
 
@@ -69,25 +72,20 @@ ESTADOS = {
 }
 MINUS = {"de", "del", "la", "las", "los", "y", "el"}
 
-# Nombre normalizado -> como lo usamos internamente. Se acepta cualquier
-# variante de acentos, mayusculas o espacios de sobra.
+# Nombre normalizado (sin acentos, minusculas) -> campo interno.
 CAMPOS = {
-    "numero de permiso": "cre_id",
-    "num de permiso": "cre_id",
-    "no de permiso": "cre_id",
-    "permiso": "cre_id",
-    "combustible": "combustible",
-    "producto": "combustible",
+    "numero de permiso": "cre_id", "num de permiso": "cre_id",
+    "no de permiso": "cre_id", "permiso": "cre_id",
+    "combustible": "combustible", "producto": "combustible",
     "razon social": "razon_social",
-    "imagen comercial": "marca",
-    "marca": "marca",
+    "domicilio": "domicilio", "direccion": "domicilio",
+    "imagen comercial": "marca", "marca": "marca",
     "grupo": "grupo",
     "clasificacion": "clasificacion",
     "tipo de flete": "tipo_flete",
     "fronterizo": "fronterizo",
     "tar": "tar_etiqueta",
-    "entidad federativa": "entidad",
-    "estado": "entidad",
+    "entidad federativa": "entidad", "estado": "entidad",
     "municipio": "municipio",
     "precios de compra/tar": "precio_compra_tar",
     "precio de compra/tar": "precio_compra_tar",
@@ -99,6 +97,7 @@ CAMPOS = {
 VIGENCIA_PATRONES = [
     r"(\d{1,2}\s+al\s+\d{1,2}\s+de\s+\w+\s+de\s+\d{4})",
     r"(\d{1,2}\s+de\s+\w+\s+al\s+\d{1,2}\s+de\s+\w+\s+de\s+\d{4})",
+    r"(\d{1,2}\s*[-/]\s*\d{1,2}\s+de\s+\w+\s+de\s+\d{4})",
     r"(\d{1,2}/\d{1,2}/\d{4}\s*(?:al|a|-)\s*\d{1,2}/\d{1,2}/\d{4})",
 ]
 
@@ -134,7 +133,8 @@ def descargar(destino):
 
 def _escribir_gz(ruta, cols, filas):
     buf = io.StringIO()
-    w = csv.DictWriter(buf, fieldnames=cols, lineterminator="\n")
+    w = csv.DictWriter(buf, fieldnames=cols, lineterminator="\n",
+                       extrasaction="ignore", restval="")
     w.writeheader()
     w.writerows(filas)
     with open(ruta, "wb") as raw:
@@ -158,10 +158,10 @@ def _leer_gz(ruta):
 # --------------------------------------------------------------------------
 
 def extraer(ruta_kml):
-    """Lee el KML y devuelve (atributos, compra, diagnostico). No escribe nada."""
-    vigencia = ""
+    """Lee el KML. Devuelve (atributos, compra, diagnostico). No escribe nada."""
+    vigencia, primera_desc = "", ""
     atributos, compra, vistos = {}, {}, set()
-    placemarks = con_datos = 0
+    placemarks = con_permiso = 0
     campos_vistos = collections.Counter()
     etiquetas = collections.Counter()
 
@@ -169,19 +169,23 @@ def extraer(ruta_kml):
         tag = el.tag.split("}")[-1]
         etiquetas[tag] += 1
 
-        if tag in ("description", "Snippet") and not vigencia:
-            for pat in VIGENCIA_PATRONES:
-                m = re.search(pat, el.text or "")
-                if m:
-                    vigencia = m.group(1)
-                    break
+        if tag in ("description", "Snippet"):
+            txt = el.text or ""
+            if not primera_desc and txt.strip():
+                primera_desc = txt.strip()[:400]
+            if not vigencia:
+                for pat in VIGENCIA_PATRONES:
+                    m = re.search(pat, txt)
+                    if m:
+                        vigencia = m.group(1)
+                        break
 
         if tag != "Placemark":
             continue
 
         placemarks += 1
         d = {}
-        # Se busca Data en cualquier profundidad y con o sin namespace, por si
+        # Se busca Data a cualquier profundidad y con o sin namespace, por si
         # Google mueve el nodo o cambia el esquema.
         for dd in el.iter():
             if dd.tag.split("}")[-1] != "Data":
@@ -191,12 +195,10 @@ def extraer(ruta_kml):
             clave = CAMPOS.get(_norm(bruto))
             if not clave:
                 continue
-            valor = ""
             for hijo in dd:
                 if hijo.tag.split("}")[-1] == "value":
-                    valor = (hijo.text or "").strip()
+                    d[clave] = (hijo.text or "").strip()
                     break
-            d[clave] = valor
 
         precio_mapa = ""
         for hijo in el:
@@ -208,7 +210,7 @@ def extraer(ruta_kml):
         cre = (d.get("cre_id") or "").strip()
         if not cre:
             continue
-        con_datos += 1
+        con_permiso += 1
         comb = _norm(d.get("combustible", ""))
 
         if cre not in atributos:
@@ -224,6 +226,7 @@ def extraer(ruta_kml):
                 "estado_profeco": ESTADOS.get(_norm(d.get("entidad", "")),
                                               titulo(d.get("entidad", ""))),
                 "municipio_profeco": titulo(d.get("municipio", "")),
+                "domicilio": titulo(d.get("domicilio", "")),
                 "vigencia": "",
             }
 
@@ -240,110 +243,114 @@ def extraer(ruta_kml):
                 "vigencia": "",
             }
 
+    if vigencia:
+        etiqueta = vigencia
+    else:
+        cdmx = datetime.timezone(datetime.timedelta(hours=-6))
+        etiqueta = "corte " + datetime.datetime.now(cdmx).strftime("%Y-%m-%d")
     for r in atributos.values():
-        r["vigencia"] = vigencia
+        r["vigencia"] = etiqueta
     for r in compra.values():
-        r["vigencia"] = vigencia
+        r["vigencia"] = etiqueta
 
-    diag = {"placemarks": placemarks, "con_permiso": con_datos,
-            "campos": campos_vistos, "etiquetas": etiquetas,
-            "vigencia": vigencia}
-    return atributos, compra, diag
+    return atributos, compra, {
+        "placemarks": placemarks, "con_permiso": con_permiso,
+        "campos": campos_vistos, "etiquetas": etiquetas,
+        "vigencia": vigencia, "descripcion": primera_desc,
+    }
 
 
 # --------------------------------------------------------------------------
-# Guardas
+# Fusion y guardas
 # --------------------------------------------------------------------------
 
-def _revisar(nombre, nuevas, viejas, clave_comb=None):
-    """Devuelve lista de motivos por los que NO se debe escribir."""
-    motivos = []
-    if not nuevas:
-        motivos.append("%s: no se extrajo ni una fila" % nombre)
-        return motivos
-    if viejas:
-        caida = 1 - len(nuevas) / len(viejas)
-        if caida > CAIDA_MAXIMA:
-            motivos.append("%s: bajo de %d a %d filas (-%.0f%%)"
-                           % (nombre, len(viejas), len(nuevas), caida * 100))
-        if clave_comb:
-            antes = {r[clave_comb] for r in viejas if r.get(clave_comb)}
-            ahora = {r[clave_comb] for r in nuevas if r.get(clave_comb)}
-            faltan = antes - ahora
-            if faltan:
-                motivos.append("%s: desaparecio por completo %s"
-                               % (nombre, ", ".join(sorted(faltan))))
-    return motivos
+def fusionar(nuevas, viejas, clave):
+    """Lo nuevo pisa a lo viejo; lo que ya no viene se conserva."""
+    salida = {r[clave]: dict(r) for r in viejas if r.get(clave)}
+    conservadas = len(set(salida) - set(nuevas))
+    salida.update({k: dict(v) for k, v in nuevas.items()})
+    return [salida[k] for k in sorted(salida)], conservadas
 
 
 def _escribir_diagnostico(diag, motivos):
     with open(DIAGNOSTICO, "w", encoding="utf-8") as fh:
-        fh.write("Diagnostico del KML de Profeco\n")
-        fh.write("=" * 60 + "\n\n")
+        fh.write("Diagnostico del KML de Profeco\n" + "=" * 60 + "\n\n")
         fh.write("Motivos por los que no se escribio:\n")
         for m in motivos:
             fh.write("  - %s\n" % m)
         fh.write("\nPlacemarks encontrados : %d\n" % diag["placemarks"])
         fh.write("Con numero de permiso  : %d\n" % diag["con_permiso"])
         fh.write("Vigencia detectada     : %s\n" % (diag["vigencia"] or "ninguna"))
+        fh.write("\nPrimera <description> del archivo:\n  %s\n"
+                 % (diag["descripcion"] or "(vacia)"))
         fh.write("\nEtiquetas XML mas frecuentes:\n")
         for t, n in diag["etiquetas"].most_common(20):
             fh.write("  %-24s %d\n" % (t, n))
-        fh.write("\nNombres de campo encontrados en <Data name=...>:\n")
+        fh.write("\nNombres de campo en <Data name=...>:\n")
         if diag["campos"]:
             for c, n in diag["campos"].most_common(40):
-                marca = "" if _norm(c) in CAMPOS else "   <-- NO RECONOCIDO"
-                fh.write("  %-40s %6d%s\n" % (repr(c), n, marca))
+                flag = "" if _norm(c) in CAMPOS else "   <-- NO RECONOCIDO"
+                fh.write("  %-40s %6d%s\n" % (repr(c), n, flag))
         else:
             fh.write("  (ninguno: el KML ya no trae ExtendedData)\n")
     print("Diagnostico guardado en %s" % os.path.basename(DIAGNOSTICO))
 
 
-def procesar(ruta_kml, forzar=False):
+def procesar(ruta_kml, fusiona=True):
     atributos, compra, diag = extraer(ruta_kml)
+    viejas_a, viejas_c = _leer_gz(ATRIBUTOS), _leer_gz(COMPRA)
 
     print("kml: %d placemarks · %d con permiso · %d estaciones · %d combinaciones"
           % (diag["placemarks"], diag["con_permiso"], len(atributos), len(compra)))
     print("     vigencia: %s" % (diag["vigencia"] or "NO DETECTADA"))
     if compra:
         porc = collections.Counter(r["combustible"] for r in compra.values())
-        print("     por combustible: %s"
+        print("     en el KML: %s"
               % " · ".join("%s %d" % (k, v) for k, v in porc.most_common()))
 
-    nuevas_a = sorted(atributos.values(), key=lambda r: r["cre_id"])
-    nuevas_c = sorted(compra.values(), key=lambda r: r["llave"])
-    motivos = (_revisar("atributos_profeco", nuevas_a, _leer_gz(ATRIBUTOS))
-               + _revisar("precio_compra", nuevas_c, _leer_gz(COMPRA), "combustible"))
-
-    if motivos and not forzar:
+    motivos = []
+    if not atributos:
+        motivos.append("el KML no dio ni una estacion con numero de permiso")
+    elif viejas_a and len(atributos) < PISO_MINIMO * len(viejas_a):
+        motivos.append("solo %d estaciones contra %d que ya habia (menos del %d%%)"
+                       % (len(atributos), len(viejas_a), PISO_MINIMO * 100))
+    if motivos:
         print("\nABORTADO: no se sobrescribe nada. Motivos:", file=sys.stderr)
         for m in motivos:
             print("  - %s" % m, file=sys.stderr)
         print("  Los archivos anteriores quedan intactos.", file=sys.stderr)
-        print("  Revisa _kml_diagnostico.txt para ver que cambio en el KML.",
-              file=sys.stderr)
         _escribir_diagnostico(diag, motivos)
         return None
 
-    if motivos:
-        print("\nAVISO: se escribe con --force pese a:", file=sys.stderr)
-        for m in motivos:
-            print("  - %s" % m, file=sys.stderr)
+    if fusiona:
+        filas_a, cons_a = fusionar(atributos, viejas_a, "cre_id")
+        filas_c, cons_c = fusionar(compra, viejas_c, "llave")
+        if cons_a or cons_c:
+            print("     conservadas del corte anterior: %d estaciones · %d combinaciones"
+                  % (cons_a, cons_c))
+    else:
+        filas_a = [atributos[k] for k in sorted(atributos)]
+        filas_c = [compra[k] for k in sorted(compra)]
 
-    _escribir_gz(ATRIBUTOS, COLS_ATRIBUTOS, nuevas_a)
-    _escribir_gz(COMPRA, COLS_COMPRA, nuevas_c)
+    _escribir_gz(ATRIBUTOS, COLS_ATRIBUTOS, filas_a)
+    _escribir_gz(COMPRA, COLS_COMPRA, filas_c)
     if os.path.exists(DIAGNOSTICO):
         os.remove(DIAGNOSTICO)
-    print("OK: archivos actualizados.")
-    return len(atributos), len(compra)
+
+    final = collections.Counter(r["combustible"] for r in filas_c)
+    print("OK: %d estaciones · %d combinaciones (%s)"
+          % (len(filas_a), len(filas_c),
+             " · ".join("%s %d" % (k, v) for k, v in final.most_common())))
+    return len(filas_a), len(filas_c)
 
 
 def main():
-    argv = [a for a in sys.argv[1:] if a != "--force"]
-    forzar = "--force" in sys.argv[1:]
+    args = sys.argv[1:]
+    fusiona = "--reemplazar" not in args
+    rutas = [a for a in args if not a.startswith("--")]
 
-    if argv:
-        return 0 if procesar(argv[0], forzar) else 1
+    if rutas:
+        return 0 if procesar(rutas[0], fusiona) else 1
 
     tmp = os.path.join(BASE, "_kml_tmp.kml")
     try:
@@ -354,7 +361,7 @@ def main():
             print("ERROR: el archivo llego incompleto; no se reescribe nada.",
                   file=sys.stderr)
             return 1
-        return 0 if procesar(tmp, forzar) else 1
+        return 0 if procesar(tmp, fusiona) else 1
     finally:
         if os.path.exists(tmp):
             os.remove(tmp)
