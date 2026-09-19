@@ -25,7 +25,7 @@ COLS = ["cre_id","tipo_permiso","razon_social","cve_geo","cve_ent","cve_mun","es
         "latitud","longitud","km_localidad","geo_origen","en_mapa_profeco",
         "tar_cercana","tar_region","km_tar",
         "marca","grupo","clasificacion","tipo_flete","fronterizo","tar_etiqueta",
-        "zona_estado","estado_profeco","municipio_profeco"]
+        "zona_estado","estado_profeco","municipio_profeco","domicilio"]
 
 
 def _leer_gz(ruta):
@@ -147,7 +147,8 @@ def construir(catalogo):
         fila["razon_social"] = (a or {}).get("razon_social") or (x.get("nombre") or "").title()
         fila["en_mapa_profeco"] = "si" if a else "no"
         for c in ("marca", "grupo", "clasificacion", "tipo_flete", "fronterizo",
-                  "tar_etiqueta", "zona_estado", "estado_profeco", "municipio_profeco"):
+                  "tar_etiqueta", "zona_estado", "estado_profeco", "municipio_profeco",
+                  "domicilio"):
             fila[c] = (a or {}).get(c, "")
 
         if coordenada_valida(la, lo):
